@@ -69,7 +69,7 @@ tm log edit <entry-id> [--start ...] [--end ...] [--note ...]
 tm log rm <entry-id>                        # delete a time entry
 
 # worklog (cross-task)
-tm worklog [--from|--to|--today|--week|--month] [--task <id>] [--tag t]... [--search q] [--limit n]
+tm worklog [--from <t>] [--to <t>] [--task <id>] [--tag t]... [--search q] [--limit n]
 tm worklog summary --group-by=day|task|tag [same filters]
 
 # interactive TUI (bubbletea)
@@ -214,7 +214,8 @@ total: 2h17m
 Cross-task view: listing and aggregates with range/tag filters.
 
 ```sh
-$ tm worklog --today
+# default range is the current ISO week (Mon–Sun)
+$ tm worklog
 ID  TASK  TITLE         DATE        START  END    DURATION  NOTE
 2   #1    write README  2026-04-17  09:00  10:30  1h30m     doc review
 1   #1    write README  2026-04-17  09:13  10:00  0h47m     refactor auth
@@ -228,11 +229,13 @@ total: 2h17m (2 entries)
 
 # filter by note
 $ tm worklog --search auth
+
+# custom range
+$ tm worklog --from 2026-04-01 --to 2026-05-01
 ```
 
-Range: `--today`, `--week` (Mon–Sun), `--month` or any `--from`/`--to`
-(accepts `HH:MM`, `YYYY-MM-DD HH:MM`, RFC3339, relative `-1h30m`). Range
-flags are mutually exclusive.
+`--from` / `--to` accept `YYYY-MM-DD`, `HH:MM`, `YYYY-MM-DD HH:MM`, RFC3339,
+or relatives like `-1h30m`.
 
 ### Interactive TUI
 
@@ -245,7 +248,7 @@ Launches an interactive task list with three tabs, cycled with
 
 - **active** — `todo` + `doing` + `action` tasks,
 - **done** — `done` tasks,
-- **worklog** — cross-task time entries filtered by range (all/today/week/month).
+- **worklog** — cross-task time entries for the current ISO week (customizable).
 
 Key bindings:
 
@@ -264,8 +267,7 @@ Key bindings:
 | `T`              | filter by tag                        |
 | `C`              | pick a context (tag) from a picker   |
 | `s`              | start/stop timer on current task     |
-| `r`              | (worklog) cycle range: all→today→week→month |
-| `d`              | delete task (with confirmation)      |
+| `d`              | delete task, or (on worklog tab) set a custom date range |
 | `p`              | publish a draft                      |
 | `/`              | live search                          |
 | `esc`            | clear filter/search                  |

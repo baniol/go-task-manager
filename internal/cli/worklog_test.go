@@ -170,13 +170,6 @@ func TestWorklogTaskAndSearchFilter(t *testing.T) {
 	}
 }
 
-func TestWorklogRejectsConflictingRangeFlags(t *testing.T) {
-	h := newHarness(t)
-	if err := h.run("worklog", "--today", "--from", "09:00"); err == nil {
-		t.Error("want error for --today + --from")
-	}
-}
-
 func TestWorklogSummaryByTask(t *testing.T) {
 	h := newHarness(t)
 	if err := h.run("add", "Alpha"); err != nil {

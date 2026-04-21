@@ -12,7 +12,7 @@ import (
 func (a *App) newExportCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "export",
-		Short: "export all tasks, tags, epics and time entries as JSON",
+		Short: "export all tasks, tags and time entries as JSON",
 		Args:  cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			ctx := c.Context()

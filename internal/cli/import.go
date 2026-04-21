@@ -20,7 +20,7 @@ func (a *App) newImportCmd() *cobra.Command {
 		Use:   "import <file>",
 		Short: "replace entire DB with JSON dump (use '-' for stdin)",
 		Long: "Reads a JSON dump produced by `tm export` and REPLACES the whole database.\n" +
-			"All existing tasks, tags, epics and time entries are wiped first.",
+			"All existing tasks, tags and time entries are wiped first.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(c *cobra.Command, args []string) error {
 			var r io.Reader
