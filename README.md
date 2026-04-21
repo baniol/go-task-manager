@@ -279,6 +279,26 @@ and `d` deletes it.
 
 Manual task order (K/J) is persisted to the database and survives restarts.
 
+## Releases
+
+Pre-built binaries for Linux and macOS (arm64/amd64) are attached to each
+[GitHub Release](../../releases). Download, make executable, and move to your
+`$PATH`:
+
+```sh
+curl -L https://github.com/<owner>/go-task-manager/releases/latest/download/tm-<version>-linux-amd64.tar.gz | tar xz
+chmod +x tm-*-linux-amd64 && mv tm-*-linux-amd64 ~/bin/tm
+```
+
+To cut a release (maintainers):
+
+```sh
+just changelog-context          # review commits since last tag
+# edit CHANGELOG.md [Unreleased] section
+just release minor              # bumps version, commits, tags
+git push --follow-tags          # triggers CI build + GitHub Release
+```
+
 ## Project layout
 
 ```

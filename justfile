@@ -70,6 +70,49 @@ smoke: build
     ./tm worklog --task 1
     ./tm worklog summary --group-by task
 
+# print git log since last tag — paste into CHANGELOG.md [Unreleased] before releasing
+changelog-context:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    since=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
+    echo "Commits since ${since}:"
+    git log "${since}..HEAD" --oneline
+
+# bump semver tag, promote [Unreleased] in CHANGELOG.md, commit and tag (does NOT push)
+# usage: just release patch|minor|major
+release segment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+    version="${current#v}"
+    IFS='.' read -r major minor patch <<< "$version"
+    case "{{segment}}" in
+        major) major=$((major+1)); minor=0; patch=0 ;;
+        minor) minor=$((minor+1)); patch=0 ;;
+        patch) patch=$((patch+1)) ;;
+        *) echo "error: usage: just release patch|minor|major"; exit 1 ;;
+    esac
+    new="v${major}.${minor}.${patch}"
+    today=$(date +%Y-%m-%d)
+    if ! grep -q "^## \[Unreleased\]" CHANGELOG.md; then
+        echo "error: CHANGELOG.md is missing an [Unreleased] section"; exit 1
+    fi
+    awk -v ver="${new}" -v date="${today}" '
+        /^## \[Unreleased\]/ {
+            print "## [Unreleased]"
+            print ""
+            print "## [" ver "] - " date
+            next
+        }
+        { print }
+    ' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+    git add CHANGELOG.md
+    git commit -m "chore: release ${new}"
+    git tag "${new}"
+    echo ""
+    echo "Tagged ${new}. Review, then push with:"
+    echo "  git push --follow-tags"
+
 # clear the gopls cache (when LSP diagnostics go stale)
 clean-gopls:
     rm -rf "${HOME}/Library/Caches/gopls"
