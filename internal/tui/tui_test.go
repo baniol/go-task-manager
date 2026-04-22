@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -591,32 +592,13 @@ func TestBodyEdit(t *testing.T) {
 	seedTasks(t, m)
 	m = apply(t, m, m.Init()())
 
-	// b → body edit
+	taskID := m.tasks[0].ID
+
+	// b launches external editor — simulate editorFinishedMsg with content
 	m = apply(t, m, key('b'))
-	if m.mode != modeBody {
-		t.Fatalf("mode = %v, want body", m.mode)
-	}
+	m = apply(t, m, editorFinishedMsg{taskID: taskID, content: "line1\nline2"})
 
-	// Type body with Enter (newline)
-	for _, r := range "line1" {
-		m = apply(t, m, key(r))
-	}
-	m = apply(t, m, special(tea.KeyEnter))
-	for _, r := range "line2" {
-		m = apply(t, m, key(r))
-	}
-	if m.input != "line1\nline2" {
-		t.Errorf("input = %q, want 'line1\\nline2'", m.input)
-	}
-
-	// ctrl+s zapisuje
-	m = apply(t, m, special(tea.KeyCtrlS))
-	if m.mode != modeList {
-		t.Errorf("mode = %v after ctrl+s, want list", m.mode)
-	}
-
-	// Weryfikujemy w store
-	tk, err := m.store.Get(context.Background(), m.tasks[0].ID)
+	tk, err := m.store.Get(context.Background(), taskID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -630,16 +612,13 @@ func TestBodyEditCancel(t *testing.T) {
 	seedTasks(t, m)
 	m = apply(t, m, m.Init()())
 
+	taskID := m.tasks[0].ID
+
+	// Non-zero exit from editor (err != nil) → no save.
 	m = apply(t, m, key('b'))
-	for _, r := range "unsaved" {
-		m = apply(t, m, key(r))
-	}
-	m = apply(t, m, special(tea.KeyEscape))
-	if m.mode != modeList {
-		t.Errorf("mode = %v after esc, want list", m.mode)
-	}
-	// Body should not change.
-	tk, _ := m.store.Get(context.Background(), m.tasks[0].ID)
+	m = apply(t, m, editorFinishedMsg{taskID: taskID, content: "unsaved", err: fmt.Errorf("exit 1")})
+
+	tk, _ := m.store.Get(context.Background(), taskID)
 	if tk.Body != "" {
 		t.Errorf("body = %q after cancel, want empty", tk.Body)
 	}
@@ -650,11 +629,18 @@ func TestBodyEditFromDetail(t *testing.T) {
 	seedTasks(t, m)
 	m = apply(t, m, m.Init()())
 
-	// enter → detail, b → body
+	taskID := m.tasks[0].ID
+
+	// enter → detail, b → external editor
 	m = apply(t, m, special(tea.KeyEnter))
-	m = apply(t, m, key('b'))
-	if m.mode != modeBody {
-		t.Fatalf("mode = %v, want body from detail", m.mode)
+	m = apply(t, m, editorFinishedMsg{taskID: taskID, content: "from detail"})
+
+	tk, err := m.store.Get(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if tk.Body != "from detail" {
+		t.Errorf("body = %q, want 'from detail'", tk.Body)
 	}
 }
 

@@ -3,11 +3,14 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"go-task-manager/internal/config"
@@ -44,6 +47,11 @@ var (
 type tasksMsg []task.Task
 type errMsg struct{ err error }
 type flashMsg string
+type editorFinishedMsg struct {
+	taskID  int64
+	content string
+	err     error
+}
 
 // activeTimerMsg — current active entry (nil = none). Title is included for the header.
 type activeTimerMsg struct {
@@ -79,7 +87,6 @@ const (
 	modeAdd                       // typing a new task title
 	modeAddTags                   // second step after modeAdd — typing tags for the new task
 	modeEdit                      // editing task title
-	modeBody                      // editing body (multiline: enter=newline, ctrl+s=save)
 	modeConfirm                   // confirmation prompt (e.g. delete)
 	modeTagAdd                    // adding a tag to a task
 	modeTagRm                     // removing a tag from a task
@@ -218,19 +225,24 @@ type Model struct {
 	contextTags   []string
 	contextCursor int
 	contextSearch string
+
+	// mdRenderer — glamour renderer for body markdown preview (created once in New)
+	mdRenderer *glamour.TermRenderer
 }
 
 func New(s store.Store, cfg *config.Config) Model {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+	r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(60))
 	return Model{
-		store:   s,
-		width:   80,
-		height:  24,
-		now:     time.Now(),
-		cfg:     cfg,
-		context: cfg.Context,
+		store:      s,
+		width:      80,
+		height:     24,
+		now:        time.Now(),
+		cfg:        cfg,
+		context:    cfg.Context,
+		mdRenderer: r,
 	}
 }
 
@@ -366,6 +378,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		rightW := min(max(m.width/2, 42), 70)
+		leftW := max(m.width-rightW-4, 20)
+		if r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(max(leftW-2, 20))); err == nil {
+			m.mdRenderer = r
+		}
 		return m, nil
 
 	case tasksMsg:
@@ -440,6 +457,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeContextPicker
 		return m, nil
 
+	case editorFinishedMsg:
+		if msg.err != nil {
+			return m, nil // editor exited non-zero (e.g. :cq) — treat as cancel
+		}
+		body := msg.content
+		taskID := msg.taskID
+		s := m.store
+		t := m.tab
+		sq := m.searchQuery
+		tags := mergeContext(m.context, m.filterTags)
+		return m, func() tea.Msg {
+			ctx := context.Background()
+			if err := s.Update(ctx, taskID, store.EditInput{Body: &body}); err != nil {
+				return errMsg{err}
+			}
+			return fetchTaskList(ctx, s, sq, t, tags)
+		}
+
 	case tickMsg:
 		m.now = time.Time(msg)
 		if m.active == nil {
@@ -477,8 +512,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInput(msg, m.commitWorklogRangeField, m.cancelWorklogRange)
 		case modeContextPicker:
 			return m.updateContextPicker(msg)
-		case modeBody:
-			return m.updateBody(msg)
 		case modeConfirm:
 			return m.updateConfirm(msg)
 		case modeDetail:
@@ -554,45 +587,38 @@ func (m Model) updateInput(msg tea.KeyMsg, commit func(Model) (Model, tea.Cmd), 
 	return m, nil
 }
 
-// updateBody — body editing: enter=newline, ctrl+s=save, esc=cancel.
-func (m Model) updateBody(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEscape:
-		m.mode = modeList
-		m.input = ""
-		return m, nil
-	case tea.KeyCtrlS:
-		return m.commitBody()
-	case tea.KeyEnter:
-		m = m.insertChar("\n")
-		return m, nil
-	default:
-		m, _ = m.handleTextEdit(msg)
+// launchBodyEditor opens $EDITOR (fallback: vi) with the task body in a temp file.
+// On return, editorFinishedMsg is dispatched with the saved content.
+func launchBodyEditor(taskID int64, body string) tea.Cmd {
+	f, err := os.CreateTemp("", "tm-body-*.md")
+	if err != nil {
+		return func() tea.Msg { return errMsg{err} }
 	}
-	return m, nil
-}
+	if _, err := f.WriteString(body); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return func() tea.Msg { return errMsg{err} }
+	}
+	f.Close()
 
-func (m Model) commitBody() (Model, tea.Cmd) {
-	if len(m.tasks) == 0 {
-		m.mode = modeList
-		m.input = ""
-		return m, nil
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
 	}
-	body := m.input
-	taskID := m.tasks[m.cursor].ID
-	m.mode = modeList
-	m.input = ""
-	s := m.store
-	t := m.tab
-	sq := m.searchQuery
-	tags := mergeContext(m.context, m.filterTags)
-	return m, func() tea.Msg {
-		ctx := context.Background()
-		if err := s.Update(ctx, taskID, store.EditInput{Body: &body}); err != nil {
-			return errMsg{err}
+	name := f.Name()
+	c := exec.Command(editor, name)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		content, readErr := os.ReadFile(name)
+		os.Remove(name)
+		if readErr != nil {
+			return errMsg{readErr}
 		}
-		return fetchTaskList(ctx, s, sq, t, tags)
-	}
+		// Non-zero exit (e.g. :cq in vim) is treated as cancel — no save.
+		if err != nil {
+			return editorFinishedMsg{taskID: taskID, content: body, err: err}
+		}
+		return editorFinishedMsg{taskID: taskID, content: string(content)}
+	})
 }
 
 func (m Model) commitSearch(mod Model) (Model, tea.Cmd) {
@@ -853,7 +879,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		if len(m.tasks) > 0 {
-			m.startInput(modeBody, m.tasks[m.cursor].Body)
+			tk := m.tasks[m.cursor]
+			return m, launchBodyEditor(tk.ID, tk.Body)
 		}
 	case "p":
 		if len(m.tasks) > 0 {
@@ -981,7 +1008,8 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		if len(m.tasks) > 0 {
-			m.startInput(modeBody, m.tasks[m.cursor].Body)
+			tk := m.tasks[m.cursor]
+			return m, launchBodyEditor(tk.ID, tk.Body)
 		}
 	case "e":
 		if len(m.tasks) > 0 {
@@ -1639,8 +1667,6 @@ func (m Model) View() string {
 		b.WriteString(m.renderInputLine("filter tag: "))
 	case modeContextPicker:
 		b.WriteString(m.renderContextPicker())
-	case modeBody:
-		b.WriteString(m.renderBodyEditor())
 	case modeLogEdit:
 		b.WriteString(m.renderDetail())
 		b.WriteString("\n")
@@ -1941,6 +1967,9 @@ func (m Model) renderDetail() string {
 	t := m.tasks[m.cursor]
 	now := time.Now().UTC()
 
+	rightW := min(max(m.width/2, 42), 70)
+	leftW := max(m.width-rightW-4, 20)
+
 	// --- left column: metadata + body ---
 	var left strings.Builder
 	left.WriteString(titleStyle.Render(fmt.Sprintf("#%d %s", t.ID, t.Title)))
@@ -1970,7 +1999,15 @@ func (m Model) renderDetail() string {
 
 	if t.Body != "" {
 		left.WriteString("\n")
-		left.WriteString(t.Body)
+		if m.mdRenderer != nil {
+			if rendered, err := m.mdRenderer.Render(t.Body); err == nil {
+				left.WriteString(strings.TrimRight(rendered, "\n"))
+			} else {
+				left.WriteString(t.Body)
+			}
+		} else {
+			left.WriteString(t.Body)
+		}
 		left.WriteString("\n")
 	}
 
@@ -1978,8 +2015,6 @@ func (m Model) renderDetail() string {
 	right := m.renderDetailLog(t.ID, now)
 
 	// Layout ~45/55 — right column (log) wider so the note fits after the entry.
-	rightW := min(max(m.width/2, 42), 70)
-	leftW := max(m.width-rightW-4, 20) // 2 spacje padding + 2 na separator
 
 	leftCol := lipgloss.NewStyle().Width(leftW).Padding(0, 1).Render(left.String())
 	borderColor := lipgloss.Color("8")
@@ -2048,42 +2083,6 @@ func (m Model) renderDetailLog(taskID int64, now time.Time) string {
 	return b.String()
 }
 
-func (m Model) renderBodyEditor() string {
-	var b strings.Builder
-	if len(m.tasks) > 0 {
-		tk := m.tasks[m.cursor]
-		b.WriteString(titleStyle.Render(fmt.Sprintf("  #%d %s", tk.ID, tk.Title)))
-		b.WriteString("\n")
-	}
-	b.WriteString(promptStyle.Render("  body:"))
-	b.WriteString("\n")
-
-	// Render body with the cursor.
-	lines := strings.Split(m.input, "\n")
-	pos := 0
-	for _, line := range lines {
-		b.WriteString("  ")
-		if m.inputCursor >= pos && m.inputCursor <= pos+len(line) {
-			// Cursor is on this line.
-			col := m.inputCursor - pos
-			b.WriteString(inputStyle.Render(line[:col]))
-			cursorChar := " "
-			rest := ""
-			if col < len(line) {
-				cursorChar = string(line[col])
-				rest = line[col+1:]
-			}
-			b.WriteString(lipgloss.NewStyle().Underline(true).Render(cursorChar))
-			b.WriteString(inputStyle.Render(rest))
-		} else {
-			b.WriteString(inputStyle.Render(line))
-		}
-		b.WriteString("\n")
-		pos += len(line) + 1 // +1 for \n
-	}
-	return b.String()
-}
-
 func (m Model) renderHelp() string {
 	switch m.mode {
 	case modeSearch:
@@ -2102,8 +2101,6 @@ func (m Model) renderHelp() string {
 		return m.helpParts("type tag name", "enter filter", "esc cancel (empty = clear)")
 	case modeContextPicker:
 		return m.helpParts("type to filter", "j/k nav", "enter select", "esc clear/cancel")
-	case modeBody:
-		return m.helpParts("enter newline", "ctrl+s save", "esc cancel")
 	case modeConfirm:
 		return m.helpParts("y confirm", "n/esc cancel")
 	case modeDetail:
