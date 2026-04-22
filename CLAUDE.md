@@ -41,7 +41,7 @@ and register them in `root.go:NewRootCmd`.
 ## Release flow
 
 1. Run `just changelog-context` to get commits since last tag
-2. Edit `## [Unreleased]` in `CHANGELOG.md` with notable changes
+2. Edit `## [Unreleased]` in `CHANGELOG.md` with notable changes — **never write a version header directly**, the script promotes `[Unreleased]` automatically
 3. Run `just release patch|minor|major` — promotes the section, commits, tags
 4. Review the commit and tag, then `git push --follow-tags`
 5. GitHub Actions builds binaries and creates a GitHub Release using the CHANGELOG section
