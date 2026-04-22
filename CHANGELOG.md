@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-04-22
+
+### Changed
+- Task body in detail view is now rendered as Markdown (via glamour)
+- `b` key opens `$EDITOR` (fallback: `vi`) instead of the built-in text editor; vim-style `:cq` cancels without saving
+
 ## [v0.1.0] - 2026-04-21
 
 ### Added
