@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"sort"
@@ -458,6 +459,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorFinishedMsg:
+		slog.Debug("editorFinishedMsg received", "taskID", msg.taskID, "hasErr", msg.err != nil, "mode", m.mode)
 		if msg.err != nil {
 			return m, nil // editor exited non-zero (e.g. :cq) — treat as cancel
 		}
@@ -469,10 +471,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		tags := mergeContext(m.context, m.filterTags)
 		return m, func() tea.Msg {
 			ctx := context.Background()
+			slog.Debug("editorFinishedMsg: Update begin", "taskID", taskID)
 			if err := s.Update(ctx, taskID, store.EditInput{Body: &body}); err != nil {
+				slog.Error("editorFinishedMsg: Update failed", "err", err)
 				return errMsg{err}
 			}
-			return fetchTaskList(ctx, s, sq, t, tags)
+			slog.Debug("editorFinishedMsg: Update done, fetching list")
+			msg := fetchTaskList(ctx, s, sq, t, tags)
+			slog.Debug("editorFinishedMsg: fetch done")
+			return msg
 		}
 
 	case tickMsg:
@@ -592,11 +599,13 @@ func (m Model) updateInput(msg tea.KeyMsg, commit func(Model) (Model, tea.Cmd), 
 func launchBodyEditor(taskID int64, body string) tea.Cmd {
 	f, err := os.CreateTemp("", "tm-body-*.md")
 	if err != nil {
+		slog.Error("editor: CreateTemp failed", "err", err)
 		return func() tea.Msg { return errMsg{err} }
 	}
 	if _, err := f.WriteString(body); err != nil {
 		f.Close()
 		os.Remove(f.Name())
+		slog.Error("editor: write temp failed", "err", err)
 		return func() tea.Msg { return errMsg{err} }
 	}
 	f.Close()
@@ -606,17 +615,22 @@ func launchBodyEditor(taskID int64, body string) tea.Cmd {
 		editor = "vi"
 	}
 	name := f.Name()
+	slog.Debug("editor: launching", "editor", editor, "tmp", name, "taskID", taskID, "bodyLen", len(body))
 	c := exec.Command(editor, name)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
+		slog.Debug("editor: ExecProcess returned", "err", err)
 		content, readErr := os.ReadFile(name)
 		os.Remove(name)
 		if readErr != nil {
+			slog.Error("editor: read temp failed", "err", readErr)
 			return errMsg{readErr}
 		}
 		// Non-zero exit (e.g. :cq in vim) is treated as cancel — no save.
 		if err != nil {
+			slog.Debug("editor: non-zero exit, treating as cancel", "err", err)
 			return editorFinishedMsg{taskID: taskID, content: body, err: err}
 		}
+		slog.Debug("editor: sending editorFinishedMsg", "taskID", taskID, "contentLen", len(content))
 		return editorFinishedMsg{taskID: taskID, content: string(content)}
 	})
 }

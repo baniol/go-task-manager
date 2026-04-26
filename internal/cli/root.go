@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,13 +40,18 @@ var version = "dev"
 
 func NewRootCmd(s store.Store) *cobra.Command {
 	a := &App{store: s}
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:           "tm",
 		Short:         "tm — task manager",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(c *cobra.Command, _ []string) error {
+			return setupLogger(verbose)
+		},
 	}
+	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "log debug info to ~/.tm/tm.log")
 	cmd.SetVersionTemplate("tm {{.Version}}\n")
 	cmd.AddCommand(
 		a.newAddCmd(),
@@ -101,4 +108,26 @@ func defaultDBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "tasks.db"), nil
+}
+
+func setupLogger(verbose bool) error {
+	if !verbose {
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, ".tm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "tm.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.Info("tm started", "version", version, "pid", os.Getpid())
+	return nil
 }
