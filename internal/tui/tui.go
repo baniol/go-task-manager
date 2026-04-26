@@ -48,6 +48,7 @@ var (
 type tasksMsg []task.Task
 type errMsg struct{ err error }
 type flashMsg string
+type mdRendererMsg struct{ r *glamour.TermRenderer }
 type editorFinishedMsg struct {
 	taskID  int64
 	content string
@@ -235,20 +236,25 @@ func New(s store.Store, cfg *config.Config) Model {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(60))
 	return Model{
-		store:      s,
-		width:      80,
-		height:     24,
-		now:        time.Now(),
-		cfg:        cfg,
-		context:    cfg.Context,
-		mdRenderer: r,
+		store:   s,
+		width:   80,
+		height:  24,
+		now:     time.Now(),
+		cfg:     cfg,
+		context: cfg.Context,
+	}
+}
+
+func initMdRenderer(wordWrap int) tea.Cmd {
+	return func() tea.Msg {
+		r, _ := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(wordWrap))
+		return mdRendererMsg{r: r}
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchTasks(), m.fetchActiveTimer(), m.fetchHasEntries())
+	return tea.Batch(m.fetchTasks(), m.fetchActiveTimer(), m.fetchHasEntries(), initMdRenderer(60))
 }
 
 func (m Model) fetchHasEntries() tea.Cmd {
@@ -381,9 +387,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		rightW := min(max(m.width/2, 42), 70)
 		leftW := max(m.width-rightW-4, 20)
-		if r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(max(leftW-2, 20))); err == nil {
-			m.mdRenderer = r
-		}
+		return m, initMdRenderer(max(leftW-2, 20))
+
+	case mdRendererMsg:
+		m.mdRenderer = msg.r
 		return m, nil
 
 	case tasksMsg:
