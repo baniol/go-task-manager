@@ -42,6 +42,7 @@ func ParsePriority(s string) (Priority, error) {
 
 type Task struct {
 	ID        int64
+	UUID      string // stable cross-device identity for sync
 	Title     string
 	Body      string
 	Status    Status
@@ -51,4 +52,6 @@ type Task struct {
 	DueAt     *time.Time // nil = no deadline
 	Position  int        // 0 = no manual position
 	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time // nil = alive; non-nil = tombstone
 }

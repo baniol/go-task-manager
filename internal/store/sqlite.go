@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 
 	"go-task-manager/internal/task"
@@ -33,11 +35,53 @@ func OpenSQLite(ctx context.Context, path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	if err := backfillTaskUUIDs(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill uuids: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("enable foreign_keys: %w", err)
 	}
 	return &SQLite{db: db, path: path}, nil
+}
+
+// backfillTaskUUIDs assigns a UUID to any pre-sync task that still has NULL uuid.
+// One-shot upgrade path: new inserts always provide uuid, so this is a no-op
+// after the first run on an old database.
+func backfillTaskUUIDs(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM tasks WHERE uuid IS NULL`)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET uuid = ? WHERE id = ?`, uuid.NewString(), id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) Path() string { return s.path }
@@ -78,8 +122,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	sort.Strings(names)
 
 	applied := 0
-	for i, name := range names {
-		version := i + 1
+	for _, name := range names {
+		version, err := parseMigrationVersion(name)
+		if err != nil {
+			return fmt.Errorf("migration %s: %w", name, err)
+		}
 		if version <= current {
 			continue
 		}
@@ -139,7 +186,9 @@ func (s *SQLite) Add(ctx context.Context, in AddInput) (task.Task, error) {
 	}
 
 	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
 	draft := !in.Ready
+	taskUUID := uuid.NewString()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,9 +201,9 @@ func (s *SQLite) Add(ctx context.Context, in AddInput) (task.Task, error) {
 		dueStr = sql.NullString{String: in.Due.UTC().Format(time.RFC3339), Valid: true}
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO tasks (title, body, status, priority, draft, due_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.Title, in.Body, task.StatusTodo, in.Priority, boolToInt(draft), dueStr, now.Format(time.RFC3339),
+		`INSERT INTO tasks (uuid, title, body, status, priority, draft, due_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		taskUUID, in.Title, in.Body, task.StatusTodo, in.Priority, boolToInt(draft), dueStr, nowStr, nowStr,
 	)
 	if err != nil {
 		return task.Task{}, err
@@ -180,6 +229,7 @@ func (s *SQLite) Add(ctx context.Context, in AddInput) (task.Task, error) {
 	}
 	return task.Task{
 		ID:        id,
+		UUID:      taskUUID,
 		Title:     in.Title,
 		Body:      in.Body,
 		Status:    task.StatusTodo,
@@ -188,11 +238,12 @@ func (s *SQLite) Add(ctx context.Context, in AddInput) (task.Task, error) {
 		Draft:     draft,
 		DueAt:     dueOut,
 		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
 func (s *SQLite) Get(ctx context.Context, id int64) (task.Task, error) {
-	tasks, err := s.queryTasks(ctx, `WHERE t.id = ?`, []any{id}, SortDefault)
+	tasks, err := s.queryTasks(ctx, `WHERE t.id = ? AND t.deleted_at IS NULL`, []any{id}, SortDefault)
 	if err != nil {
 		return task.Task{}, err
 	}
@@ -204,7 +255,7 @@ func (s *SQLite) Get(ctx context.Context, id int64) (task.Task, error) {
 
 func (s *SQLite) List(ctx context.Context, filter ListFilter) ([]task.Task, error) {
 	var (
-		where []string
+		where = []string{"t.deleted_at IS NULL"}
 		args  []any
 	)
 	if filter.Status != "" {
@@ -274,8 +325,8 @@ func (s *SQLite) queryTasks(ctx context.Context, cond string, args []any, order 
 		orderBy = `(t.position = 0), t.position, ` + priorityOrder + `, t.id`
 	}
 	query := `
-		SELECT t.id, t.title, t.body, t.status, t.priority,
-		       t.draft, t.due_at, t.position, t.created_at
+		SELECT t.id, t.uuid, t.title, t.body, t.status, t.priority,
+		       t.draft, t.due_at, t.position, t.created_at, t.updated_at, t.deleted_at
 		FROM tasks t
 		` + cond + `
 		ORDER BY ` + orderBy
@@ -293,18 +344,38 @@ func (s *SQLite) queryTasks(ctx context.Context, cond string, args []any, order 
 	for rows.Next() {
 		var (
 			t         task.Task
+			uuidStr   sql.NullString
 			draftInt  int
 			dueAt     sql.NullString
 			createdAt string
+			updatedAt sql.NullString
+			deletedAt sql.NullString
 		)
-		if err := rows.Scan(&t.ID, &t.Title, &t.Body, &t.Status, &t.Priority,
-			&draftInt, &dueAt, &t.Position, &createdAt); err != nil {
+		if err := rows.Scan(&t.ID, &uuidStr, &t.Title, &t.Body, &t.Status, &t.Priority,
+			&draftInt, &dueAt, &t.Position, &createdAt, &updatedAt, &deletedAt); err != nil {
 			return nil, err
 		}
+		t.UUID = uuidStr.String
 		t.Draft = draftInt == 1
 		t.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse created_at for task %d: %w", t.ID, err)
+		}
+		if updatedAt.Valid {
+			ts, err := time.Parse(time.RFC3339, updatedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse updated_at for task %d: %w", t.ID, err)
+			}
+			t.UpdatedAt = ts
+		} else {
+			t.UpdatedAt = t.CreatedAt
+		}
+		if deletedAt.Valid {
+			ts, err := time.Parse(time.RFC3339, deletedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse deleted_at for task %d: %w", t.ID, err)
+			}
+			t.DeletedAt = &ts
 		}
 		if dueAt.Valid {
 			due, err := time.Parse(time.RFC3339, dueAt.String)
@@ -343,7 +414,10 @@ func (s *SQLite) Search(ctx context.Context, query string, filter SearchFilter) 
 	// OR, NOT, *) are passed through unchanged.
 	ftsQuery := fts5PrefixQuery(query)
 
-	where := []string{"t.id IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?)"}
+	where := []string{
+		"t.deleted_at IS NULL",
+		"t.id IN (SELECT rowid FROM tasks_fts WHERE tasks_fts MATCH ?)",
+	}
 	args := []any{ftsQuery}
 
 	if filter.Status != "" {
@@ -381,7 +455,8 @@ func (s *SQLite) Search(ctx context.Context, query string, filter SearchFilter) 
 
 func (s *SQLite) Move(ctx context.Context, id int64, status task.Status) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET status = ? WHERE id = ?`, status, id)
+		`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		status, nowRFC3339(), id)
 	if err != nil {
 		return err
 	}
@@ -436,6 +511,8 @@ func (s *SQLite) Update(ctx context.Context, id int64, in EditInput) error {
 	case in.ClearDue:
 		sets = append(sets, "due_at = NULL")
 	}
+	sets = append(sets, "updated_at = ?")
+	args = append(args, nowRFC3339())
 	args = append(args, id)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
@@ -469,6 +546,9 @@ func (s *SQLite) AddTaskTags(ctx context.Context, taskID int64, tags []string) e
 			return err
 		}
 	}
+	if err := bumpTaskUpdatedAt(ctx, tx, taskID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -498,6 +578,9 @@ func (s *SQLite) RemoveTaskTags(ctx context.Context, taskID int64, tags []string
 		)`, args...); err != nil {
 		return err
 	}
+	if err := bumpTaskUpdatedAt(ctx, tx, taskID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -517,6 +600,14 @@ func (s *SQLite) DeleteTag(ctx context.Context, name string) (int64, error) {
 		`SELECT COUNT(*) FROM task_tags WHERE tag_id = ?`, tagID).Scan(&count); err != nil {
 		return 0, err
 	}
+	// Bump updated_at on every task that had this tag, so tag removal propagates via sync.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET updated_at = ?
+		 WHERE id IN (SELECT task_id FROM task_tags WHERE tag_id = ?)
+		   AND deleted_at IS NULL`,
+		nowRFC3339(), tagID); err != nil {
+		return 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, tagID); err != nil {
 		return 0, err
 	}
@@ -526,12 +617,33 @@ func (s *SQLite) DeleteTag(ctx context.Context, name string) (int64, error) {
 	return count, nil
 }
 
+// Delete is a soft delete: it sets deleted_at (tombstone) instead of removing
+// the row, so the deletion can propagate through sync. Time entries and tag
+// links are preserved; reads filter tombstoned rows. A running timer on the
+// deleted task is stopped — leaving it active would be a stuck-state footgun.
 func (s *SQLite) Delete(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return checkAffected(res, id)
+	defer tx.Rollback()
+
+	now := nowRFC3339()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		now, now, id)
+	if err != nil {
+		return err
+	}
+	if err := checkAffected(res, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE time_entries SET ended_at = ? WHERE task_id = ? AND ended_at IS NULL`,
+		now, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) SetPositions(ctx context.Context, ids []int64) error {
@@ -544,14 +656,16 @@ func (s *SQLite) SetPositions(ctx context.Context, ids []int64) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `UPDATE tasks SET position = ? WHERE id = ?`)
+	stmt, err := tx.PrepareContext(ctx,
+		`UPDATE tasks SET position = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
+	now := nowRFC3339()
 	for i, id := range ids {
-		if _, err := stmt.ExecContext(ctx, i+1, id); err != nil {
+		if _, err := stmt.ExecContext(ctx, i+1, now, id); err != nil {
 			return fmt.Errorf("set position for task %d: %w", id, err)
 		}
 	}
@@ -560,7 +674,8 @@ func (s *SQLite) SetPositions(ctx context.Context, ids []int64) error {
 
 func (s *SQLite) Publish(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET draft = 0 WHERE id = ?`, id)
+		`UPDATE tasks SET draft = 0, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		nowRFC3339(), id)
 	if err != nil {
 		return err
 	}
@@ -674,13 +789,41 @@ func loadTagsForTasks(ctx context.Context, db *sql.DB, ids []int64) (map[int64][
 
 func assertTaskExists(ctx context.Context, tx *sql.Tx, id int64) error {
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE id = ?`, id).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE id = ? AND deleted_at IS NULL`, id).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
 		return fmt.Errorf("task %d not found", id)
 	}
 	return nil
+}
+
+func nowRFC3339() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// parseMigrationVersion extracts the leading integer from a migration filename
+// like "016_sync.sql" — the version is encoded in the filename, not derived
+// from sort order, so version numbers can jump (e.g. when older migrations are
+// squashed into a newer baseline).
+func parseMigrationVersion(name string) (int, error) {
+	prefix, _, ok := strings.Cut(name, "_")
+	if !ok {
+		return 0, fmt.Errorf("missing version prefix in %q", name)
+	}
+	v, err := strconv.Atoi(prefix)
+	if err != nil {
+		return 0, fmt.Errorf("non-numeric version prefix in %q: %w", name, err)
+	}
+	return v, nil
+}
+
+func bumpTaskUpdatedAt(ctx context.Context, tx *sql.Tx, id int64) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		nowRFC3339(), id)
+	return err
 }
 
 func checkAffected(res sql.Result, id int64) error {

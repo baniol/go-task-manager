@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func (s *SQLite) ImportReplace(ctx context.Context, payload ImportPayload) error {
@@ -52,11 +54,24 @@ func (s *SQLite) ImportReplace(ctx context.Context, payload ImportPayload) error
 		if t.DueAt != nil {
 			dueStr = sql.NullString{String: t.DueAt.UTC().Format(time.RFC3339), Valid: true}
 		}
+		taskUUID := t.UUID
+		if taskUUID == "" {
+			taskUUID = uuid.NewString()
+		}
+		updatedAt := t.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = t.CreatedAt
+		}
+		var deletedStr sql.NullString
+		if t.DeletedAt != nil {
+			deletedStr = sql.NullString{String: t.DeletedAt.UTC().Format(time.RFC3339), Valid: true}
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tasks (id, title, body, status, priority, draft, due_at, position, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.Title, t.Body, t.Status, t.Priority,
-			boolToInt(t.Draft), dueStr, t.Position, t.CreatedAt.UTC().Format(time.RFC3339),
+			`INSERT INTO tasks (id, uuid, title, body, status, priority, draft, due_at, position, created_at, updated_at, deleted_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.ID, taskUUID, t.Title, t.Body, t.Status, t.Priority,
+			boolToInt(t.Draft), dueStr, t.Position,
+			t.CreatedAt.UTC().Format(time.RFC3339), updatedAt.UTC().Format(time.RFC3339), deletedStr,
 		); err != nil {
 			return fmt.Errorf("insert task %d: %w", t.ID, err)
 		}

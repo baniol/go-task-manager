@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -493,7 +494,7 @@ func TestPublishFlipsDraftToReady(t *testing.T) {
 	}
 }
 
-func TestDeleteRemovesTaskAndOrphanTagsLink(t *testing.T) {
+func TestDeleteSoftDeletesAndPreservesLinks(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -512,14 +513,24 @@ func TestDeleteRemovesTaskAndOrphanTagsLink(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].ID != keep.ID {
 		t.Errorf("tasks after delete = %+v, want only id=%d", tasks, keep.ID)
 	}
+	if _, err := s.Get(ctx, drop.ID); err == nil {
+		t.Errorf("Get after Delete should fail for tombstoned task")
+	}
 
-	// FK CASCADE removed task_tags rows
+	// Soft delete: row + tag links remain so sync can propagate the tombstone.
+	var deletedAt sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT deleted_at FROM tasks WHERE id = ?`, drop.ID).Scan(&deletedAt); err != nil {
+		t.Fatalf("read deleted_at: %v", err)
+	}
+	if !deletedAt.Valid {
+		t.Errorf("deleted_at is NULL, want non-null tombstone")
+	}
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_tags WHERE task_id = ?`, drop.ID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("orphan task_tags rows after delete: %d", n)
+	if n != 1 {
+		t.Errorf("task_tags rows for tombstoned task = %d, want 1 (preserved)", n)
 	}
 }
 
@@ -570,8 +581,8 @@ func TestMigrationsIdempotentOnReopen(t *testing.T) {
 	if err := s2.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 1 {
-		t.Errorf("user_version = %d, want 1", userVersion)
+	if userVersion != 16 {
+		t.Errorf("user_version = %d, want 16", userVersion)
 	}
 
 	tasks, err := s2.List(ctx, ListFilter{})

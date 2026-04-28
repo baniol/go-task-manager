@@ -74,6 +74,7 @@ func (a *App) newImportCmd() *cobra.Command {
 				payload.Tasks = append(payload.Tasks, store.ImportTask{
 					Task: task.Task{
 						ID:        dt.ID,
+						UUID:      dt.UUID,
 						Title:     dt.Title,
 						Body:      dt.Body,
 						Status:    dt.Status,
@@ -83,6 +84,8 @@ func (a *App) newImportCmd() *cobra.Command {
 						DueAt:     dt.DueAt,
 						Position:  dt.Position,
 						CreatedAt: dt.CreatedAt,
+						UpdatedAt: dt.UpdatedAt,
+						DeletedAt: dt.DeletedAt,
 					},
 					TimeEntries: entries,
 				})

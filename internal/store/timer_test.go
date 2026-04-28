@@ -119,7 +119,9 @@ func TestTaskTotalDurationSumsEntries(t *testing.T) {
 	}
 }
 
-func TestDeleteTaskCascadesTimeEntries(t *testing.T) {
+// Soft-delete keeps time entries (preserved for sync history) but stops any
+// running timer on the deleted task — leaving it active would be a stuck state.
+func TestDeleteTaskStopsRunningTimerAndKeepsHistory(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	tk := mustAdd(t, s, AddInput{Title: "T"})
@@ -136,6 +138,18 @@ func TestDeleteTaskCascadesTimeEntries(t *testing.T) {
 		t.Fatalf("ActiveTimer: %v", err)
 	}
 	if active != nil {
-		t.Fatalf("cascade failed: active timer still present: %+v", active)
+		t.Fatalf("running timer not stopped after Delete: %+v", active)
+	}
+
+	// History preserved.
+	entries, err := s.TimeEntries(ctx, tk.ID)
+	if err != nil {
+		t.Fatalf("TimeEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (history preserved)", len(entries))
+	}
+	if entries[0].EndedAt == nil {
+		t.Errorf("entry ended_at is nil, want it stamped on Delete")
 	}
 }

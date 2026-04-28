@@ -49,6 +49,7 @@ func (a *App) newExportCmd() *cobra.Command {
 				}
 				out.Tasks = append(out.Tasks, dumpTask{
 					ID:          t.ID,
+					UUID:        t.UUID,
 					Title:       t.Title,
 					Body:        t.Body,
 					Status:      t.Status,
@@ -58,6 +59,8 @@ func (a *App) newExportCmd() *cobra.Command {
 					DueAt:       t.DueAt,
 					Position:    t.Position,
 					CreatedAt:   t.CreatedAt,
+					UpdatedAt:   t.UpdatedAt,
+					DeletedAt:   t.DeletedAt,
 					TimeEntries: exEntries,
 				})
 			}

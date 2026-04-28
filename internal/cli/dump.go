@@ -17,6 +17,7 @@ type dumpTimeEntry struct {
 
 type dumpTask struct {
 	ID          int64           `json:"id"`
+	UUID        string          `json:"uuid,omitempty"`
 	Title       string          `json:"title"`
 	Body        string          `json:"body,omitempty"`
 	Status      task.Status     `json:"status"`
@@ -26,6 +27,8 @@ type dumpTask struct {
 	DueAt       *time.Time      `json:"due_at,omitempty"`
 	Position    int             `json:"position"`
 	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	DeletedAt   *time.Time      `json:"deleted_at,omitempty"`
 	TimeEntries []dumpTimeEntry `json:"time_entries"`
 }
 
