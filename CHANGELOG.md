@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.3] - 2026-04-29
+
 ### Performance
 - TUI: cached markdown rendering (glamour) — body is rendered once, not on every frame
 - TUI: debounced live search (200 ms) — fewer FTS5 queries while typing
