@@ -37,6 +37,12 @@ func OpenSQLite(ctx context.Context, path string) (*SQLite, error) {
 		db.Close()
 		return nil, fmt.Errorf("enable foreign_keys: %w", err)
 	}
+	// WAL mode: allows concurrent readers during writes, reducing lock contention
+	// between background tick queries and mutation commands.
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
 	return &SQLite{db: db, path: path}, nil
 }
 
@@ -538,24 +544,23 @@ func (s *SQLite) SetPositions(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, `UPDATE tasks SET position = ? WHERE id = ?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
+	// Single UPDATE with CASE WHEN — one round-trip instead of N.
+	caseParts := make([]string, len(ids))
+	caseArgs := make([]any, len(ids)*2) // 2 args per WHEN (id, position)
+	inPlaceholders := make([]string, len(ids))
 	for i, id := range ids {
-		if _, err := stmt.ExecContext(ctx, i+1, id); err != nil {
-			return fmt.Errorf("set position for task %d: %w", id, err)
-		}
+		caseParts[i] = fmt.Sprintf("WHEN %d THEN %d", id, i+1)
+		caseArgs[i*2] = id
+		caseArgs[i*2+1] = i + 1
+		inPlaceholders[i] = "?"
 	}
-	return tx.Commit()
+	query := fmt.Sprintf(
+		"UPDATE tasks SET position = CASE id %s END WHERE id IN (%s)",
+		strings.Join(caseParts, " "),
+		strings.Join(inPlaceholders, ", "),
+	)
+	_, err := s.db.ExecContext(ctx, query, caseArgs...)
+	return err
 }
 
 func (s *SQLite) Publish(ctx context.Context, id int64) error {

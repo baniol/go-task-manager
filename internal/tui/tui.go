@@ -76,6 +76,10 @@ type worklogMsg []store.WorklogEntry
 // tickMsg — once-per-second signal while a timer is active (refreshes the header).
 type tickMsg time.Time
 
+// searchDebounceMsg — fires after a pause in typing; token must match current
+// searchDebounce to avoid stale fetches.
+type searchDebounceMsg struct{ token int }
+
 func (e errMsg) Error() string { return e.err.Error() }
 
 // --- interaction mode ---
@@ -172,6 +176,9 @@ type Model struct {
 	// input — shared buffer for search/add/edit
 	input       string
 	inputCursor int
+	// searchDebounce — monotonically increasing token; incremented on each keystroke
+	// in modeSearch so that only the latest debounce tick triggers a fetch.
+	searchDebounce int
 
 	// pendingAddTitle — new task title remembered between modeAdd → modeAddTags
 	pendingAddTitle string
@@ -219,6 +226,10 @@ type Model struct {
 	worklogCustomTo   *time.Time
 	worklogRangeField int // 0=from, 1=to (during modeWorklogRange)
 
+	// wlRowsCache / wlNavCache — cached buildWorklogRows result; invalidated on worklogMsg.
+	wlRowsCache []wlRow
+	wlNavCache  int
+
 	// context — active context (tag); "" = no filter
 	context string
 	// cfg — config file
@@ -230,6 +241,9 @@ type Model struct {
 
 	// mdRenderer — glamour renderer for body markdown preview (created once in New)
 	mdRenderer *glamour.TermRenderer
+	// mdCache — cached glamour render result; invalidated when body changes.
+	mdCacheBody string
+	mdCacheHTML string
 }
 
 func New(s store.Store, cfg *config.Config) Model {
@@ -391,6 +405,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case mdRendererMsg:
 		m.mdRenderer = msg.r
+		// Renderer recreated (e.g. word-wrap changed) — invalidate markdown cache.
+		m.mdCacheBody = ""
+		m.mdCacheHTML = ""
 		return m, nil
 
 	case tasksMsg:
@@ -413,8 +430,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wasActive := m.active != nil
 		m.active = msg.entry
 		m.activeTitle = msg.title
-		// Refresh "has entries" set (start adds; stop doesn't change it, but cheaper than branching).
-		cmds := []tea.Cmd{m.fetchHasEntries()}
+		// Only refresh "has entries" when timer state actually changes (start/stop).
+		cmds := []tea.Cmd{}
+		if m.active != nil && !wasActive {
+			cmds = append(cmds, m.fetchHasEntries())
+		}
 		if m.mode == modeDetail && len(m.tasks) > 0 {
 			cmds = append(cmds, m.fetchDetailLog(m.tasks[m.cursor].ID))
 		}
@@ -446,6 +466,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.worklogEntries) {
 			m.cursor = max(0, len(m.worklogEntries)-1)
 		}
+		// Entries changed — rebuild worklog rows cache.
+		m.wlRowsCache, m.wlNavCache = buildWorklogRows(msg, time.Now().UTC())
 		return m, nil
 
 	case contextTagsMsg:
@@ -495,6 +517,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tickCmd()
+
+	case searchDebounceMsg:
+		// Only fetch if this is the latest debounce token (user hasn't typed more).
+		if msg.token == m.searchDebounce && m.mode == modeSearch {
+			m.searchQuery = m.input
+			return m, m.fetchForTab()
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		// Global: ctrl+c → quit.
@@ -593,10 +623,12 @@ func (m Model) updateInput(msg tea.KeyMsg, commit func(Model) (Model, tea.Cmd), 
 	default:
 		m, _ = m.handleTextEdit(msg)
 	}
-	// Live search — update results as the user types.
+	// Live search — debounce: only fetch after a pause in typing.
 	if m.mode == modeSearch {
-		m.searchQuery = m.input
-		return m, m.fetchForTab()
+		m.searchDebounce++
+		return m, tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+			return searchDebounceMsg{token: m.searchDebounce}
+		})
 	}
 	return m, nil
 }
@@ -940,7 +972,7 @@ func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "j", "down":
-		if n := worklogNavCount(m.worklogEntries, time.Now().UTC()); m.cursor < n-1 {
+		if m.cursor < m.wlNavCache-1 {
 			m.cursor++
 		}
 	case "k", "up":
@@ -950,7 +982,7 @@ func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g", "home":
 		m.cursor = 0
 	case "G", "end":
-		m.cursor = max(0, worklogNavCount(m.worklogEntries, time.Now().UTC())-1)
+		m.cursor = max(0, m.wlNavCache-1)
 	case "tab", "right":
 		m.tab = (m.tab + 1) % tabCount
 		m.cursor = 0
@@ -1872,10 +1904,6 @@ func buildWorklogRows(entries []store.WorklogEntry, now time.Time) (rows []wlRow
 	return
 }
 
-func worklogNavCount(entries []store.WorklogEntry, now time.Time) int {
-	_, n := buildWorklogRows(entries, now)
-	return n
-}
 
 var dayHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
@@ -1927,7 +1955,7 @@ func (m Model) renderWorklogList() string {
 		return b.String()
 	}
 
-	rows, navCount := buildWorklogRows(m.worklogEntries, now)
+	rows, navCount := m.wlRowsCache, m.wlNavCache
 
 	// Find the display-index of the selected row.
 	selectedDisplay := 0
@@ -2020,15 +2048,7 @@ func (m Model) renderDetail() string {
 
 	if t.Body != "" {
 		left.WriteString("\n")
-		if m.mdRenderer != nil {
-			if rendered, err := m.mdRenderer.Render(t.Body); err == nil {
-				left.WriteString(strings.TrimRight(rendered, "\n"))
-			} else {
-				left.WriteString(t.Body)
-			}
-		} else {
-			left.WriteString(t.Body)
-		}
+		left.WriteString(m.renderMarkdown(t.Body))
 		left.WriteString("\n")
 	}
 
@@ -2209,6 +2229,24 @@ func (m Model) helpParts(parts ...string) string {
 }
 
 func runeLen(s string) int { return len([]rune(s)) }
+
+// renderMarkdown renders body via glamour, caching the result.
+// Cache is invalidated when body text changes or renderer is replaced.
+func (m *Model) renderMarkdown(body string) string {
+	if body == m.mdCacheBody && m.mdCacheHTML != "" {
+		return strings.TrimRight(m.mdCacheHTML, "\n")
+	}
+	if m.mdRenderer == nil {
+		return body
+	}
+	rendered, err := m.mdRenderer.Render(body)
+	if err != nil {
+		return body
+	}
+	m.mdCacheBody = body
+	m.mdCacheHTML = rendered
+	return strings.TrimRight(rendered, "\n")
+}
 
 func renderStatus(s task.Status) string {
 	switch s {
