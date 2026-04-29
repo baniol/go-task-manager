@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+- TUI: cached markdown rendering (glamour) — body is rendered once, not on every frame
+- TUI: debounced live search (200 ms) — fewer FTS5 queries while typing
+- TUI: cached worklog rows aggregation — built once per fetch, not per render
+- TUI: removed unnecessary `fetchHasEntries()` on every timer state message
+- SQLite: enabled WAL journal mode for concurrent read/write without lock contention
+- Store: `SetPositions` uses a single `CASE WHEN` UPDATE instead of N round-trips
+
 ## [v0.1.2] - 2026-04-26
 
 ## [v0.1.1] - 2026-04-22
