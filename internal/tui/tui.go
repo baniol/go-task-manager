@@ -996,7 +996,7 @@ func (m Model) updateWorklog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + tabCount - 1) % tabCount
 		m.cursor = 0
 		return m, m.fetchForTab()
-	case "d":
+	case "r":
 		m.worklogRangeField = 0
 		m.startInput(modeWorklogRange, time.Now().Local().Format("2006-01-02"))
 		return m, nil
