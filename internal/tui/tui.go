@@ -230,6 +230,10 @@ type Model struct {
 
 	// mdRenderer — glamour renderer for body markdown preview (created once in New)
 	mdRenderer *glamour.TermRenderer
+
+	// body render cache — invalidated when task ID, body content, or renderer changes
+	cachedBodyKey      string // "<taskID>\x00<body>"
+	cachedBodyRendered string
 }
 
 func New(s store.Store, cfg *config.Config) Model {
@@ -244,6 +248,33 @@ func New(s store.Store, cfg *config.Config) Model {
 		cfg:     cfg,
 		context: cfg.Context,
 	}
+}
+
+// rebuildBodyCache re-renders the current task body via glamour and stores the
+// result in the model. Called from Update whenever the task or renderer changes,
+// so View() never blocks on a glamour parse.
+func (m Model) rebuildBodyCache() Model {
+	if m.mdRenderer == nil || len(m.tasks) == 0 || m.cursor >= len(m.tasks) {
+		return m
+	}
+	t := m.tasks[m.cursor]
+	if t.Body == "" {
+		m.cachedBodyKey = ""
+		m.cachedBodyRendered = ""
+		return m
+	}
+	key := fmt.Sprintf("%d\x00%s", t.ID, t.Body)
+	if m.cachedBodyKey == key {
+		return m // already up to date
+	}
+	rendered, err := m.mdRenderer.Render(t.Body)
+	m.cachedBodyKey = key
+	if err == nil {
+		m.cachedBodyRendered = strings.TrimRight(rendered, "\n")
+	} else {
+		m.cachedBodyRendered = t.Body
+	}
+	return m
 }
 
 func initMdRenderer(wordWrap int) tea.Cmd {
@@ -390,7 +421,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, initMdRenderer(max(leftW-2, 20))
 
 	case mdRendererMsg:
+		m.cachedBodyKey = "" // force re-render with new renderer
 		m.mdRenderer = msg.r
+		m = m.rebuildBodyCache()
 		return m, nil
 
 	case tasksMsg:
@@ -398,6 +431,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		if m.cursor >= len(m.tasks) {
 			m.cursor = max(0, len(m.tasks)-1)
+		}
+		if m.mode == modeDetail {
+			m = m.rebuildBodyCache()
 		}
 		return m, nil
 
@@ -872,6 +908,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(m.tasks) > 0 {
 			m.mode = modeDetail
+			m = m.rebuildBodyCache()
 			return m, m.fetchDetailLog(m.tasks[m.cursor].ID)
 		}
 	case "t":
@@ -1610,7 +1647,6 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-
 	var b strings.Builder
 
 	// Header with tabs.
@@ -2020,12 +2056,8 @@ func (m Model) renderDetail() string {
 
 	if t.Body != "" {
 		left.WriteString("\n")
-		if m.mdRenderer != nil {
-			if rendered, err := m.mdRenderer.Render(t.Body); err == nil {
-				left.WriteString(strings.TrimRight(rendered, "\n"))
-			} else {
-				left.WriteString(t.Body)
-			}
+		if m.cachedBodyRendered != "" {
+			left.WriteString(m.cachedBodyRendered)
 		} else {
 			left.WriteString(t.Body)
 		}
