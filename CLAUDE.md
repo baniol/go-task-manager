@@ -36,7 +36,7 @@ and register them in `root.go:NewRootCmd`.
 - Input validation at the store boundary (empty titles, etc.)
 - Store tests: `newTestStore(t)` with a temp DB; CLI tests: `newHarness(t)` in helpers_test.go
 - **All code, comments, docs and identifiers are in English.**
-- Commits without `Co-Authored-By` Anthropic
+- **Commit messages must NOT contain a `Co-Authored-By:` trailer** (no Anthropic, no Claude). Use `git commit -m "..."` with the message body only — never append the trailer, even when the harness suggests it.
 
 ## Release flow
 
