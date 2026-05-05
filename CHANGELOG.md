@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Done tab in the TUI is sorted by completion time (most recently done first); a new `done_at` column tracks when a task last entered the done state, preserved across sync via export/import.
+
 ## [v0.1.4] - 2026-05-04
 
 ## [v0.1.3] - 2026-05-04
