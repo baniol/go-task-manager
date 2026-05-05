@@ -323,10 +323,13 @@ func (s *SQLite) queryTasks(ctx context.Context, cond string, args []any, order 
 	case SortPosition:
 		// Tasks with position > 0 on top (by position), the rest by priority/id.
 		orderBy = `(t.position = 0), t.position, ` + priorityOrder + `, t.id`
+	case SortDoneAt:
+		// Most recently completed first. Rows without done_at sink to the bottom.
+		orderBy = `(t.done_at IS NULL), t.done_at DESC, t.id DESC`
 	}
 	query := `
 		SELECT t.id, t.uuid, t.title, t.body, t.status, t.priority,
-		       t.draft, t.due_at, t.position, t.created_at, t.updated_at, t.deleted_at
+		       t.draft, t.due_at, t.position, t.created_at, t.updated_at, t.done_at, t.deleted_at
 		FROM tasks t
 		` + cond + `
 		ORDER BY ` + orderBy
@@ -349,10 +352,11 @@ func (s *SQLite) queryTasks(ctx context.Context, cond string, args []any, order 
 			dueAt     sql.NullString
 			createdAt string
 			updatedAt sql.NullString
+			doneAt    sql.NullString
 			deletedAt sql.NullString
 		)
 		if err := rows.Scan(&t.ID, &uuidStr, &t.Title, &t.Body, &t.Status, &t.Priority,
-			&draftInt, &dueAt, &t.Position, &createdAt, &updatedAt, &deletedAt); err != nil {
+			&draftInt, &dueAt, &t.Position, &createdAt, &updatedAt, &doneAt, &deletedAt); err != nil {
 			return nil, err
 		}
 		t.UUID = uuidStr.String
@@ -369,6 +373,13 @@ func (s *SQLite) queryTasks(ctx context.Context, cond string, args []any, order 
 			t.UpdatedAt = ts
 		} else {
 			t.UpdatedAt = t.CreatedAt
+		}
+		if doneAt.Valid {
+			ts, err := time.Parse(time.RFC3339, doneAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse done_at for task %d: %w", t.ID, err)
+			}
+			t.DoneAt = &ts
 		}
 		if deletedAt.Valid {
 			ts, err := time.Parse(time.RFC3339, deletedAt.String)
@@ -454,9 +465,16 @@ func (s *SQLite) Search(ctx context.Context, query string, filter SearchFilter) 
 }
 
 func (s *SQLite) Move(ctx context.Context, id int64, status task.Status) error {
+	// done_at is set the first time a task enters "done" and preserved on
+	// done→done re-saves (COALESCE). Reopening a done task clears it.
+	now := nowRFC3339()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
-		status, nowRFC3339(), id)
+		`UPDATE tasks
+		   SET status = ?,
+		       updated_at = ?,
+		       done_at = CASE WHEN ? = 'done' THEN COALESCE(done_at, ?) ELSE NULL END
+		 WHERE id = ? AND deleted_at IS NULL`,
+		status, now, status, now, id)
 	if err != nil {
 		return err
 	}

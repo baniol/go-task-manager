@@ -152,6 +152,7 @@ const (
 	SortDefault  SortOrder = ""         // priority desc, id asc
 	SortDue      SortOrder = "due"      // due_at asc (NULLS LAST), then priority, id
 	SortPosition SortOrder = "position" // manual order (position > 0 first, then priority/id)
+	SortDoneAt   SortOrder = "done_at"  // done_at desc (most recent first), NULLs last
 )
 
 // DraftMode controls whether List returns drafts.

@@ -371,7 +371,7 @@ func (m Model) fetchTasks() tea.Cmd {
 			}
 			return tasksMsg(tasks)
 		}
-		filter := store.ListFilter{Statuses: t.statuses(), Sort: store.SortPosition, Tags: tags}
+		filter := store.ListFilter{Statuses: t.statuses(), Sort: listSortFor(t), Tags: tags}
 		tasks, err := s.List(ctx, filter)
 		if err != nil {
 			return errMsg{err}
@@ -389,11 +389,20 @@ func fetchTaskList(ctx context.Context, s store.Store, sq string, t tab, tags []
 		}
 		return tasksMsg(tasks)
 	}
-	tasks, err := s.List(ctx, store.ListFilter{Statuses: t.statuses(), Sort: store.SortPosition, Tags: tags})
+	tasks, err := s.List(ctx, store.ListFilter{Statuses: t.statuses(), Sort: listSortFor(t), Tags: tags})
 	if err != nil {
 		return errMsg{err}
 	}
 	return tasksMsg(tasks)
+}
+
+// listSortFor picks the row order per tab. The done tab shows most recently
+// completed first; everything else uses manual position ordering.
+func listSortFor(t tab) store.SortOrder {
+	if t == tabDone {
+		return store.SortDoneAt
+	}
+	return store.SortPosition
 }
 
 // mergeContext combines the active context with extra tag filters (AND).

@@ -60,6 +60,7 @@ func (a *App) newExportCmd() *cobra.Command {
 					Position:    t.Position,
 					CreatedAt:   t.CreatedAt,
 					UpdatedAt:   t.UpdatedAt,
+					DoneAt:      t.DoneAt,
 					DeletedAt:   t.DeletedAt,
 					TimeEntries: exEntries,
 				})

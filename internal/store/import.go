@@ -66,12 +66,16 @@ func (s *SQLite) ImportReplace(ctx context.Context, payload ImportPayload) error
 		if t.DeletedAt != nil {
 			deletedStr = sql.NullString{String: t.DeletedAt.UTC().Format(time.RFC3339), Valid: true}
 		}
+		var doneStr sql.NullString
+		if t.DoneAt != nil {
+			doneStr = sql.NullString{String: t.DoneAt.UTC().Format(time.RFC3339), Valid: true}
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tasks (id, uuid, title, body, status, priority, draft, due_at, position, created_at, updated_at, deleted_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO tasks (id, uuid, title, body, status, priority, draft, due_at, position, created_at, updated_at, done_at, deleted_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			t.ID, taskUUID, t.Title, t.Body, t.Status, t.Priority,
 			boolToInt(t.Draft), dueStr, t.Position,
-			t.CreatedAt.UTC().Format(time.RFC3339), updatedAt.UTC().Format(time.RFC3339), deletedStr,
+			t.CreatedAt.UTC().Format(time.RFC3339), updatedAt.UTC().Format(time.RFC3339), doneStr, deletedStr,
 		); err != nil {
 			return fmt.Errorf("insert task %d: %w", t.ID, err)
 		}

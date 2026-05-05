@@ -581,8 +581,8 @@ func TestMigrationsIdempotentOnReopen(t *testing.T) {
 	if err := s2.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if userVersion != 16 {
-		t.Errorf("user_version = %d, want 16", userVersion)
+	if userVersion != 17 {
+		t.Errorf("user_version = %d, want 17", userVersion)
 	}
 
 	tasks, err := s2.List(ctx, ListFilter{})

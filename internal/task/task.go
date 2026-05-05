@@ -53,5 +53,6 @@ type Task struct {
 	Position  int        // 0 = no manual position
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	DoneAt    *time.Time // nil = not done; set when status last entered "done"
 	DeletedAt *time.Time // nil = alive; non-nil = tombstone
 }

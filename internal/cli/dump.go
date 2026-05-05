@@ -28,6 +28,7 @@ type dumpTask struct {
 	Position    int             `json:"position"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+	DoneAt      *time.Time      `json:"done_at,omitempty"`
 	DeletedAt   *time.Time      `json:"deleted_at,omitempty"`
 	TimeEntries []dumpTimeEntry `json:"time_entries"`
 }

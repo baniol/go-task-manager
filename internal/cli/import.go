@@ -85,6 +85,7 @@ func (a *App) newImportCmd() *cobra.Command {
 						Position:  dt.Position,
 						CreatedAt: dt.CreatedAt,
 						UpdatedAt: dt.UpdatedAt,
+						DoneAt:    dt.DoneAt,
 						DeletedAt: dt.DeletedAt,
 					},
 					TimeEntries: entries,
