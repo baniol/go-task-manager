@@ -7,6 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Done tab in the TUI is sorted by completion time (most recently done first); a new `done_at` column tracks when a task last entered the done state, preserved across sync via export/import.
+- TUI logs slow `Update`/`View` frames (>3ms) when run with `--verbose`, with a per-stage breakdown for the detail view, so future input-lag regressions can be diagnosed without re-adding ad-hoc timing.
 
 ## [v0.1.4] - 2026-05-04
 

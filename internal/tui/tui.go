@@ -420,7 +420,24 @@ func mergeContext(ctx string, filterTags []string) []string {
 
 // --- update ---
 
+// slowFrameThreshold is the duration above which Update/View timings are
+// logged. Bubble Tea drops keypresses when the event loop falls behind, so
+// keeping this instrumentation permanent (gated by --verbose) lets us catch
+// regressions without re-adding ad-hoc timing during the next bug report.
+// 3ms is comfortably above the normal cost (~1ms) and below the 7ms regime
+// that previously caused dropped inputs.
+const slowFrameThreshold = 3 * time.Millisecond
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	start := time.Now()
+	mode := m.mode
+	tab := m.tab
+	defer func() {
+		if d := time.Since(start); d > slowFrameThreshold {
+			slog.Debug("tui Update slow",
+				"took", d, "msg", fmt.Sprintf("%T", msg), "mode", mode, "tab", tab)
+		}
+	}()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1653,6 +1670,14 @@ func (m Model) renderContextPicker() string {
 // --- view ---
 
 func (m Model) View() string {
+	start := time.Now()
+	mode := m.mode
+	tab := m.tab
+	defer func() {
+		if d := time.Since(start); d > slowFrameThreshold {
+			slog.Debug("tui View slow", "took", d, "mode", mode, "tab", tab)
+		}
+	}()
 	if m.quitting {
 		return ""
 	}
@@ -2030,6 +2055,23 @@ func (m Model) renderWorklogList() string {
 }
 
 func (m Model) renderDetail() string {
+	tStart := time.Now()
+	var tBuild, tLeftStyle, tRight, tRightStyle, tJoin time.Duration
+	defer func() {
+		total := time.Since(tStart)
+		if total > slowFrameThreshold {
+			slog.Debug("renderDetail timing",
+				"total", total,
+				"build", tBuild,
+				"leftStyle", tLeftStyle,
+				"right", tRight,
+				"rightStyle", tRightStyle,
+				"join", tJoin,
+				"bodyLen", len(m.cachedBodyRendered),
+			)
+		}
+	}()
+
 	t := m.tasks[m.cursor]
 	now := time.Now().UTC()
 
@@ -2073,21 +2115,34 @@ func (m Model) renderDetail() string {
 		left.WriteString("\n")
 	}
 
+	tBuild = time.Since(tStart)
+
 	// --- right column: time log ---
+	tRightStart := time.Now()
 	right := m.renderDetailLog(t.ID, now)
+	tRight = time.Since(tRightStart)
 
 	// Layout ~45/55 — right column (log) wider so the note fits after the entry.
 
+	tLeftStyleStart := time.Now()
 	leftCol := lipgloss.NewStyle().Width(leftW).Padding(0, 1).Render(left.String())
+	tLeftStyle = time.Since(tLeftStyleStart)
+
 	borderColor := lipgloss.Color("8")
 	if m.detailFocus == 1 {
 		borderColor = lipgloss.Color("14")
 	}
+	tRightStyleStart := time.Now()
 	rightCol := lipgloss.NewStyle().Width(rightW).Padding(0, 1).
 		BorderLeft(true).BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(borderColor).
 		Render(right)
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+	tRightStyle = time.Since(tRightStyleStart)
+
+	tJoinStart := time.Now()
+	out := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+	tJoin = time.Since(tJoinStart)
+	return out
 }
 
 func (m Model) renderDetailLog(taskID int64, now time.Time) string {
