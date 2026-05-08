@@ -234,6 +234,12 @@ type Model struct {
 	// body render cache — invalidated when task ID, body content, or renderer changes
 	cachedBodyKey      string // "<taskID>\x00<body>"
 	cachedBodyRendered string
+
+	// startup / pacing instrumentation (debug only)
+	startedAt    time.Time
+	firstUpdate  bool
+	lastUpdateAt time.Time
+	lastMsgType  string
 }
 
 func New(s store.Store, cfg *config.Config) Model {
@@ -241,12 +247,13 @@ func New(s store.Store, cfg *config.Config) Model {
 		cfg = &config.Config{}
 	}
 	return Model{
-		store:   s,
-		width:   80,
-		height:  24,
-		now:     time.Now(),
-		cfg:     cfg,
-		context: cfg.Context,
+		store:     s,
+		width:     80,
+		height:    24,
+		now:       time.Now(),
+		cfg:       cfg,
+		context:   cfg.Context,
+		startedAt: time.Now(),
 	}
 }
 
@@ -432,10 +439,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
 	mode := m.mode
 	tab := m.tab
+	msgType := fmt.Sprintf("%T", msg)
+	if !m.firstUpdate {
+		slog.Debug("tui first Update", "sinceStart", time.Since(m.startedAt), "msg", msgType)
+		m.firstUpdate = true
+	}
+	if !m.lastUpdateAt.IsZero() {
+		if gap := start.Sub(m.lastUpdateAt); gap > 50*time.Millisecond {
+			slog.Debug("tui gap between Updates",
+				"gap", gap, "prevMsg", m.lastMsgType, "nextMsg", msgType, "mode", mode, "tab", tab)
+		}
+	}
+	m.lastUpdateAt = start
+	m.lastMsgType = msgType
 	defer func() {
 		if d := time.Since(start); d > slowFrameThreshold {
 			slog.Debug("tui Update slow",
-				"took", d, "msg", fmt.Sprintf("%T", msg), "mode", mode, "tab", tab)
+				"took", d, "msg", msgType, "mode", mode, "tab", tab)
 		}
 	}()
 	switch msg := msg.(type) {
